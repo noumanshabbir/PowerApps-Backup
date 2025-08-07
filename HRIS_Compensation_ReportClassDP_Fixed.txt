@@ -1,0 +1,226 @@
+[
+SRSReportQueryAttribute (querystr(IPA_HRIS_Compensation_Report_Query)),
+     SRSReportParameterAttribute(classStr(HRIS_Compensation_ReportClassContract))
+]
+
+
+public class HRIS_Compensation_ReportClassDP extends SrsReportDataProviderPreProcessTempDB
+{
+    IPA_HRIS_Compensation_TempTable compensationTmp, compensationTmp1, compensationTmp2;
+    IPA_HRIS_Comp_Report_EmpTmpTable _EmpTmpTable;
+    //IPA_HRIS_Compensation_TempTable2 compensationTmp2, compensationTmp3;
+    IPA_HRIS_Compensation_Table _IPA_HRIS_Compensation_Table;
+    IPA_HRIS_Comp_Report_PositionTmp _PositionTable, _PositionTable2;
+    HcmWorker _HcmWorker;
+    HcmPositionWorkerAssignment _PositionWorkerAssignment;
+    HcmPositionDetail _HcmPositionDetail;
+
+    
+
+    [SRSReportDataSetAttribute(tablestr('IPA_HRIS_Compensation_TempTable'))]
+    public IPA_HRIS_Compensation_TempTable getTempTable()
+    {
+        select * from compensationTmp;
+        return compensationTmp;
+    }
+
+    [SRSReportDataSetAttribute(tablestr('IPA_HRIS_Comp_Report_PositionTmp'))]
+    public IPA_HRIS_Comp_Report_PositionTmp getTempTable_Compensation()
+    {
+        select * from _PositionTable;
+        return _PositionTable;
+    }
+
+
+    public void processReport()
+    {
+        HRIS_Compensation_ReportClassContract contract = this.parmDataContract();
+
+        str employeeId = contract.parmEmployeeId();
+        str businessUnit = contract.parmBusinessUnit();
+        str costCenter = contract.parmCostCenter();
+        str project = contract.parmProject();
+
+        delete_from compensationTmp;
+        delete_from _PositionTable;
+
+        while select * from _IPA_HRIS_Compensation_Table order by _IPA_HRIS_Compensation_Table.StartDate asc
+        {
+            if (_IPA_HRIS_Compensation_Table.Employee == employeeId)
+            {
+                select firstonly _HcmWorker where _HcmWorker.PersonnelNumber == employeeId;
+                if (_HcmWorker)
+                {
+                    this.processPositionData(_HcmWorker, employeeId);
+                    this.processCompensationData(_IPA_HRIS_Compensation_Table);
+                }
+            }
+            else if (_IPA_HRIS_Compensation_Table.BusinessUnit == businessUnit)
+            {
+                // Future use
+            }
+        }
+    }
+
+    private void processPositionData(HcmWorker _HcmWorker, str employeeId)
+    {
+        HcmPositionDetail _HcmPositionDetail;
+        HcmPositionWorkerAssignment _PositionWorkerAssignment;
+        HcmPositionRecId primaryPositionRecId;
+        int yearDiff, monthDiff, totalMonths;
+        str _status;
+        int _positionUpdated = 0;
+
+        while select validtimestate(dateNull(), dateMax()) * from _PositionWorkerAssignment
+        where _PositionWorkerAssignment.Worker == _HcmWorker.RecId
+        {
+            _positionUpdated = 1;
+            primaryPositionRecId = HcmWorkerHelper::getPrimaryPosition(_PositionWorkerAssignment.Worker);
+
+            _PositionTable.clear();
+            _PositionTable.Employee = employeeId;
+            _PositionTable.WorkerRecID = _PositionWorkerAssignment.Worker;
+            _PositionTable.PositionValidFrom = _PositionWorkerAssignment.ValidFrom;
+            _PositionTable.PositionValidTo = _PositionWorkerAssignment.ValidTo;
+
+            _status = (_PositionWorkerAssignment.Position == primaryPositionRecId) ? "Active" : "Past";
+            _PositionTable.PositionStatus = _status;
+
+            utcdatetime fromDate = _PositionWorkerAssignment.ValidFrom;
+            utcdatetime toDate = _PositionWorkerAssignment.ValidTo;
+
+            if (year(dateTimeUtil::date(toDate)) > 2100)
+            {
+                toDate = DateTimeUtil::getSystemDateTime();
+            }
+
+            TransDate from = dateTimeUtil::date(fromDate);
+            TransDate to = dateTimeUtil::date(toDate);
+            yearDiff = year(to) - year(from);
+            monthDiff = mthOfYr(to) - mthOfYr(from);
+            totalMonths = (yearDiff * 12) + monthDiff;
+            _PositionTable.PositionMonths = totalMonths;
+
+            select firstonly _HcmPositionDetail where _HcmPositionDetail.Position == _PositionWorkerAssignment.Position;
+            _PositionTable.PositionTitle = _HcmPositionDetail.Description;
+
+            ttsbegin;
+            _PositionTable.insert();
+            ttscommit;
+        }
+    }
+
+    private void processCompensationData(IPA_HRIS_Compensation_Table compTable)
+    {
+        int numMonth = mthOfYr(compTable.StartDate);
+        int numYear = year(compTable.StartDate);
+        str fiscalYear = (numMonth >= 7) ? strFmt("%1-%2", numYear, numYear + 1) : strFmt("%1-%2", numYear - 1, numYear);
+        IPA_HRIS_Compensation_TempTable compensationTmpLocal;
+
+        // Find existing record for this employee and fiscal year
+        select firstonly compensationTmpLocal 
+            where compensationTmpLocal.Employee == compTable.Employee 
+               && compensationTmpLocal.FiscalYear == fiscalYear;
+
+        if (compensationTmpLocal)
+        {
+            // Update existing record
+            select forupdate compensationTmp 
+                where compensationTmp.Employee == compTable.Employee 
+                   && compensationTmp.FiscalYear == fiscalYear;
+            
+            if (compensationTmp.RecId)
+            {
+                ttsbegin;
+                // += Fields (accumulate values)
+                compensationTmp.Bonus                      += compTable.Bonus;
+                compensationTmp.Comission                  += compTable.Comission;
+                compensationTmp.Compuls_Health_insuCont    += compTable.Compuls_Health_insuCont;
+                compensationTmp.EducationAllowance         += compTable.EducationAllowance;
+                compensationTmp.EOBI                       += compTable.EOBI;
+                compensationTmp.FemaleTransport            += compTable.FemaleTransport;
+                compensationTmp.GOSI                       += compTable.GOSI;
+                compensationTmp.GrossSalary                += compTable.GrossSalary;
+                compensationTmp.IPD                        += compTable.IPD;
+                compensationTmp.JobEnhanceAdder            += compTable.JobEnhanceAdder;
+                compensationTmp.Mandatory_pension_cont     += compTable.Mandatory_pension_cont;
+                compensationTmp.MobileBilling              += compTable.MobileBilling;
+                compensationTmp.OPD                        += compTable.OPD;
+                compensationTmp.OtherAllowances            += compTable.OtherAllowances;
+                compensationTmp.OverTime                   += compTable.OverTime;
+                compensationTmp.Pension                    += compTable.Pension;
+                compensationTmp.ProjectBonus               += compTable.ProjectBonus;
+                compensationTmp.ProvidentFund              += compTable.ProvidentFund;
+                compensationTmp.SalaryAdder                += compTable.SalaryAdder;
+                compensationTmp.SiteAllowance              += compTable.SiteAllowance;
+                compensationTmp.TravelTickets              += compTable.TravelTickets;
+                compensationTmp.Grand_Total_Monthly        += compTable.Grand_Total_Monthly;
+                compensationTmp.GrandTotal_USD_Monthly     += compTable.GrandTotal_USD_Monthly;
+                compensationTmp.GrandTotal_USD_Annually    += compTable.GrandTotal_USD_Annually;
+
+                // Replace fields (use latest values)
+                compensationTmp.BaseOffice                 = compTable.BaseOffice;
+                compensationTmp.BusinessUnit               = compTable.BusinessUnit;
+                compensationTmp.Territory                  = compTable.Territory;
+                compensationTmp.Project                    = compTable.Project;
+                compensationTmp.CostCenter                 = compTable.CostCenter;
+                compensationTmp.SubDepartment              = compTable.SubDepartment;
+                compensationTmp.ReportingToEmployee        = compTable.ReportingToEmployee;
+                compensationTmp.EndDate                    = compTable.EndDate;
+
+                compensationTmp.update();
+                ttscommit;
+            }
+        }
+        else
+        {
+            // Insert new record
+            ttsbegin;
+            compensationTmp.clear();
+            
+            // CRITICAL: Set the Employee field first (this is likely the mandatory field causing the error)
+            compensationTmp.Employee                     = compTable.Employee;
+            compensationTmp.FiscalYear                   = fiscalYear;
+            compensationTmp.StartDate                    = compTable.StartDate;
+            compensationTmp.EndDate                      = compTable.EndDate;
+            
+            // Set all compensation fields
+            compensationTmp.Bonus                        = compTable.Bonus;
+            compensationTmp.Comission                    = compTable.Comission;
+            compensationTmp.Compuls_Health_insuCont      = compTable.Compuls_Health_insuCont;
+            compensationTmp.EducationAllowance           = compTable.EducationAllowance;
+            compensationTmp.EOBI                         = compTable.EOBI;
+            compensationTmp.FemaleTransport              = compTable.FemaleTransport;
+            compensationTmp.GOSI                         = compTable.GOSI;
+            compensationTmp.GrossSalary                  = compTable.GrossSalary;
+            compensationTmp.IPD                          = compTable.IPD;
+            compensationTmp.JobEnhanceAdder              = compTable.JobEnhanceAdder;
+            compensationTmp.Mandatory_pension_cont       = compTable.Mandatory_pension_cont;
+            compensationTmp.MobileBilling                = compTable.MobileBilling;
+            compensationTmp.OPD                          = compTable.OPD;
+            compensationTmp.OtherAllowances              = compTable.OtherAllowances;
+            compensationTmp.OverTime                     = compTable.OverTime;
+            compensationTmp.Pension                      = compTable.Pension;
+            compensationTmp.ProjectBonus                 = compTable.ProjectBonus;
+            compensationTmp.ProvidentFund                = compTable.ProvidentFund;
+            compensationTmp.SalaryAdder                  = compTable.SalaryAdder;
+            compensationTmp.SiteAllowance                = compTable.SiteAllowance;
+            compensationTmp.TravelTickets                = compTable.TravelTickets;
+            compensationTmp.Grand_Total_Monthly          = compTable.Grand_Total_Monthly;
+            compensationTmp.GrandTotal_USD_Monthly       = compTable.GrandTotal_USD_Monthly;
+            compensationTmp.GrandTotal_USD_Annually      = compTable.GrandTotal_USD_Annually;
+
+            compensationTmp.CurrencyCode                 = compTable.CurrencyCode;
+            compensationTmp.BaseOffice                   = compTable.BaseOffice;
+            compensationTmp.BusinessUnit                 = compTable.BusinessUnit;
+            compensationTmp.Territory                    = compTable.Territory;
+            compensationTmp.Project                      = compTable.Project;
+            compensationTmp.CostCenter                   = compTable.CostCenter;
+            compensationTmp.SubDepartment                = compTable.SubDepartment;
+            compensationTmp.ReportingToEmployee          = compTable.ReportingToEmployee;
+
+            compensationTmp.insert();
+            ttscommit;
+        }
+    }
+}
